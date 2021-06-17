@@ -1,3 +1,7 @@
+#15 player support
+
+This is a very rough fix for 15 player support for people still running 2.4.3 of AutoMuteUs and self hosting, everything should work the same, and has been fine in my limited testing but you do this at your own risk!
+
 <p align="center">
     <img src="assets/AutoMuteUsBanner_cropped.png" width="800">
 </p>

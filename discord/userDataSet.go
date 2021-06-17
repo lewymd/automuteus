@@ -137,7 +137,7 @@ func (uds *UserDataSet) ToEmojiEmbedFields(nameColorMap map[string]int, nameAliv
 	uds.lock.RLock()
 	defer uds.lock.RUnlock()
 
-	unsorted := make([]*discordgo.MessageEmbedField, 12)
+	unsorted := make([]*discordgo.MessageEmbedField, 18)
 	num := 0
 
 	for name, color := range nameColorMap {
@@ -166,7 +166,7 @@ func (uds *UserDataSet) ToEmojiEmbedFields(nameColorMap map[string]int, nameAliv
 
 	sorted := make([]*discordgo.MessageEmbedField, num)
 	num = 0
-	for i := 0; i < 12; i++ {
+	for i := 0; i < 18; i++ {
 		if unsorted[i] != nil {
 			sorted[num] = unsorted[i]
 			num++
