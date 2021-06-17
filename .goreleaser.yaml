@@ -1,0 +1,12 @@
+builds:
+  - goos:
+      - windows
+      - linux
+    goarch:
+      - "386"
+    mod_timestamp: "{{ .CommitTimestamp }}"
+archives:
+  - format: binary
+    name_template: "{{ .ProjectName }}_{{ .Os }}"
+checksum:
+  disable: true

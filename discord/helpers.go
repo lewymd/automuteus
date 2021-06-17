@@ -3,21 +3,64 @@ package discord
 import (
 	"crypto/sha256"
 	"encoding/hex"
-	"fmt"
-	"github.com/automuteus/utils/pkg/game"
 	"log"
-	"math/rand"
-	"regexp"
 	"strings"
+	"time"
 
 	"github.com/bwmarrin/discordgo"
+	"github.com/denverquane/amongusdiscord/game"
 )
+
+// when querying for the member list we need to specify a size
+// too high reduces performance
+// too low increases the chance of the member we want not being in the list
+// ideally this should be adjusted on a per-server basis
+const MemberQuerySize = 1000
 
 type UserPatchParameters struct {
 	GuildID  string
 	Userdata UserData
 	Deaf     bool
 	Mute     bool
+	Nick     string
+}
+
+func guildMemberUpdate(s *discordgo.Session, params UserPatchParameters) {
+	g, err := s.Guild(params.GuildID)
+	if err != nil {
+		log.Println(err)
+	}
+
+	//we can't nickname the owner, and we shouldn't nickname with an empty string...
+	if params.Nick == "" || g.OwnerID == params.Userdata.GetID() {
+		guildMemberUpdateNoNick(s, params)
+	} else {
+		newParams := struct {
+			Deaf bool   `json:"deaf"`
+			Mute bool   `json:"mute"`
+			Nick string `json:"nick"`
+		}{params.Deaf, params.Mute, params.Nick}
+		log.Printf("Issuing update request to discord for userID %s with mute=%v deaf=%v nick=%s\n", params.Userdata.GetID(), params.Mute, params.Deaf, params.Nick)
+
+		_, err := s.RequestWithBucketID("PATCH", discordgo.EndpointGuildMember(params.GuildID, params.Userdata.GetID()), newParams, discordgo.EndpointGuildMember(params.GuildID, ""))
+		if err != nil {
+			log.Println("Failed to change nickname for user: move the bot up in your Roles")
+			log.Println(err)
+			guildMemberUpdateNoNick(s, params)
+		}
+	}
+}
+
+func guildMemberUpdateNoNick(s *discordgo.Session, params UserPatchParameters) {
+	log.Printf("Issuing update request to discord for userID %s with mute=%v deaf=%v\n", params.Userdata.GetID(), params.Mute, params.Deaf)
+	newParams := struct {
+		Deaf bool `json:"deaf"`
+		Mute bool `json:"mute"`
+	}{params.Deaf, params.Mute}
+	_, err := s.RequestWithBucketID("PATCH", discordgo.EndpointGuildMember(params.GuildID, params.Userdata.GetID()), newParams, discordgo.EndpointGuildMember(params.GuildID, ""))
+	if err != nil {
+		log.Println(err)
+	}
 }
 
 func getPhaseFromString(input string) game.Phase {
@@ -53,14 +96,63 @@ func getPhaseFromString(input string) game.Phase {
 	}
 }
 
-func getRoleFromString(s *discordgo.Session, guildID string, input string) string {
-	// find which role the User was referencing in their message
+// GetRoomAndRegionFromArgs does what it sounds like
+func getRoomAndRegionFromArgs(args []string) (string, string) {
+	if len(args) == 0 {
+		return "Unprovided", "Unprovided"
+	}
+	room := strings.ToUpper(args[0])
+	if len(args) == 1 {
+		return room, "Unprovided"
+	}
+	region := strings.ToLower(args[1])
+	switch region {
+	case "na":
+		fallthrough
+	case "us":
+		fallthrough
+	case "usa":
+		fallthrough
+	case "north":
+		region = "North America"
+	case "eu":
+		fallthrough
+	case "europe":
+		region = "Europe"
+	case "as":
+		fallthrough
+	case "asia":
+		region = "Asia"
+	}
+	return room, region
+}
+
+func getMemberFromString(s *discordgo.Session, GuildID string, input string) string {
+	// find which member the user was referencing in their message
+	// TODO increase performance by caching member list for when function called more than once
+	// first check if is mentionned
+	ID, err := extractUserIDFromMention(input)
+	if err == nil {
+		return ID
+	}
+	members, _ := s.GuildMembers(GuildID, "", MemberQuerySize)
+	for _, member := range members {
+		if input == member.User.ID || input == strings.ToLower(member.Nick) || input == strings.ToLower(member.User.Username) ||
+			input == strings.ToLower(member.User.Username)+"#"+member.User.Discriminator {
+			return member.User.ID
+		}
+	}
+	return ""
+}
+
+func getRoleFromString(s *discordgo.Session, GuildID string, input string) string {
+	// find which role the user was referencing in their message
 	// first check if is mentionned
 	ID, err := extractRoleIDFromMention(input)
 	if err == nil {
 		return ID
 	}
-	roles, _ := s.GuildRoles(guildID)
+	roles, _ := s.GuildRoles(GuildID)
 	for _, role := range roles {
 		if input == role.ID || input == strings.ToLower(role.Name) {
 			return role.ID
@@ -72,104 +164,9 @@ func getRoleFromString(s *discordgo.Session, guildID string, input string) strin
 func generateConnectCode(guildID string) string {
 	h := sha256.New()
 	h.Write([]byte(guildID))
-
-	// add some randomness
-	h.Write([]byte(fmt.Sprintf("%f", rand.Float64())))
-	return strings.ToUpper(hex.EncodeToString(h.Sum(nil))[0:8])
-}
-
-var urlregex = regexp.MustCompile(`^http(?P<secure>s?)://(?P<host>[\w.-]+)(?::(?P<port>\d+))?/?$`)
-
-func formCaptureURL(url, connectCode string) (hyperlink, minimalURL string) {
-	if match := urlregex.FindStringSubmatch(url); match != nil {
-		secure := match[urlregex.SubexpIndex("secure")] == "s"
-		host := match[urlregex.SubexpIndex("host")]
-		port := ":" + match[urlregex.SubexpIndex("port")]
-
-		if port == ":" {
-			if secure {
-				port = ":443"
-			} else {
-				port = ":80"
-			}
-		}
-
-		insecure := "?insecure"
-		protocol := "http://"
-		if secure {
-			insecure = ""
-			protocol = "https://"
-		}
-
-		hyperlink = fmt.Sprintf("aucapture://%s%s/%s%s", host, port, connectCode, insecure)
-		minimalURL = fmt.Sprintf("%s%s%s", protocol, host, port)
-	} else {
-		hyperlink = "Invalid HOST provided (should resemble something like `http://localhost:8123`)"
-		minimalURL = "Invalid HOST provided"
-	}
-	return
-}
-
-func mentionByUserID(userID string) string {
-	return "<@!" + userID + ">"
-}
-
-func sendMessageDM(s *discordgo.Session, userID string, message *discordgo.MessageEmbed) *discordgo.Message {
-	dmChannel, err := s.UserChannelCreate(userID)
-	if err != nil {
-		log.Println(err)
-	}
-	m, err := s.ChannelMessageSendEmbed(dmChannel.ID, message)
-	if err != nil {
-		log.Println(err)
-	}
-	return m
-}
-
-func sendMessageEmbed(s *discordgo.Session, channelID string, message *discordgo.MessageEmbed) *discordgo.Message {
-	msg, err := s.ChannelMessageSendEmbed(channelID, message)
-	if err != nil {
-		log.Println(err)
-	}
-	return msg
-}
-
-func editMessageEmbed(s *discordgo.Session, channelID string, messageID string, message *discordgo.MessageEmbed) *discordgo.Message {
-	msg, err := s.ChannelMessageEditEmbed(channelID, messageID, message)
-	if err != nil {
-		log.Println(err)
-	}
-	return msg
-}
-
-func deleteMessage(s *discordgo.Session, channelID string, messageID string) {
-	err := s.ChannelMessageDelete(channelID, messageID)
-	if err != nil {
-		log.Println(err)
-	}
-}
-
-func addReaction(s *discordgo.Session, channelID, messageID, emojiID string) {
-	err := s.MessageReactionAdd(channelID, messageID, emojiID)
-	if err != nil {
-		log.Println(err)
-	}
-}
-
-func removeAllReactions(s *discordgo.Session, channelID, messageID string) {
-	err := s.MessageReactionsRemoveAll(channelID, messageID)
-	if err != nil {
-		log.Println(err)
-	}
-}
-
-func removeReaction(s *discordgo.Session, channelID, messageID, emojiNameOrID, userID string) {
-	err := s.MessageReactionRemove(channelID, messageID, emojiNameOrID, userID)
-	if err != nil {
-		log.Println(err)
-	}
-}
-
-func matchIDCode(connectCode string, matchID int64) string {
-	return fmt.Sprintf("%s:%d", connectCode, matchID)
+	//add some "randomness" with the current time
+	h.Write([]byte(time.Now().String()))
+	hashed := strings.ToUpper(hex.EncodeToString(h.Sum(nil))[0:8])
+	//TODO replace common problematic characters?
+	return strings.ReplaceAll(strings.ReplaceAll(hashed, "I", "1"), "O", "0")
 }

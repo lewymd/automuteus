@@ -2,11 +2,10 @@ package discord
 
 import (
 	"encoding/base64"
+	"github.com/denverquane/amongusdiscord/game"
 	"io/ioutil"
 	"log"
 	"net/http"
-
-	"github.com/automuteus/utils/pkg/game"
 
 	"github.com/bwmarrin/discordgo"
 )
@@ -50,18 +49,18 @@ func (e *Emoji) DownloadAndBase64Encode() string {
 
 func emptyStatusEmojis() AlivenessEmojis {
 	topMap := make(AlivenessEmojis)
-	topMap[true] = make([]Emoji, 18) // 18 colors for alive/dead
-	topMap[false] = make([]Emoji, 18)
+	topMap[true] = make([]Emoji, 12) //12 colors for alive/dead
+	topMap[false] = make([]Emoji, 12)
 	return topMap
 }
 
-func (bot *Bot) addAllMissingEmojis(s *discordgo.Session, guildID string, alive bool, serverEmojis []*discordgo.Emoji) {
-	for i, emoji := range GlobalAlivenessEmojis[alive] {
+func (guild *GuildState) addSpecialEmojis(s *discordgo.Session, guildID string, serverEmojis []*discordgo.Emoji) {
+	for _, emoji := range GlobalSpecialEmojis {
 		alreadyExists := false
 		for _, v := range serverEmojis {
 			if v.Name == emoji.Name {
 				emoji.ID = v.ID
-				bot.StatusEmojis[alive][i] = emoji
+				guild.SpecialEmojis[v.Name] = emoji
 				alreadyExists = true
 				break
 			}
@@ -74,10 +73,43 @@ func (bot *Bot) addAllMissingEmojis(s *discordgo.Session, guildID string, alive 
 			} else {
 				log.Printf("Added emoji %s successfully!\n", emoji.Name)
 				emoji.ID = em.ID
-				bot.StatusEmojis[alive][i] = emoji
+				guild.SpecialEmojis[em.Name] = emoji
 			}
 		}
 	}
+}
+
+func (guild *GuildState) addAllMissingEmojis(s *discordgo.Session, guildID string, alive bool, serverEmojis []*discordgo.Emoji) {
+	for i, emoji := range GlobalAlivenessEmojis[alive] {
+		alreadyExists := false
+		for _, v := range serverEmojis {
+			if v.Name == emoji.Name {
+				emoji.ID = v.ID
+				guild.StatusEmojis[alive][i] = emoji
+				alreadyExists = true
+				break
+			}
+		}
+		if !alreadyExists {
+			b64 := emoji.DownloadAndBase64Encode()
+			em, err := s.GuildEmojiCreate(guildID, emoji.Name, b64, nil)
+			if err != nil {
+				log.Println(err)
+			} else {
+				log.Printf("Added emoji %s successfully!\n", emoji.Name)
+				emoji.ID = em.ID
+				guild.StatusEmojis[alive][i] = emoji
+			}
+		}
+	}
+}
+
+// GlobalSpecialEmojis map
+var GlobalSpecialEmojis = map[string]Emoji{
+	"alarm": {
+		Name: "aualarm",
+		ID:   "756595863048159323",
+	},
 }
 
 // AlivenessEmojis map
@@ -134,30 +166,6 @@ var GlobalAlivenessEmojis = AlivenessEmojis{
 			Name: "aulime",
 			ID:   "762392088121442334",
 		},
-		game.Maroon: {
-			Name: "aumaroon",
-			ID:   "855108016881008670",
-		},
-		game.Rose: {
-			Name: "aurose",
-			ID:   "855108016734732329",
-		},
-		game.Banana: {
-			Name: "aubanana",
-			ID:   "855108016420552736",
-		},
-		game.Gray: {
-			Name: "augray",
-			ID:   "855108016801054760",
-		},
-		game.Tan: {
-			Name: "autan",
-			ID:   "855108016546250753",
-		},
-		game.Sunset: {
-			Name: "ausunset",
-			ID:   "855108016466821151",
-		},
 	},
 	false: []Emoji{
 		game.Red: {
@@ -207,30 +215,6 @@ var GlobalAlivenessEmojis = AlivenessEmojis{
 		game.Lime: {
 			Name: "aulimedead",
 			ID:   "762397192366325793",
-		},
-		game.Maroon: {
-			Name: "aumaroondead",
-			ID:   "855108016890576906",
-		},
-		game.Rose: {
-			Name: "aurosedead",
-			ID:   "855108016817700936",
-		},
-		game.Banana: {
-			Name: "aubananadead",
-			ID:   "855108016746266644",
-		},
-		game.Gray: {
-			Name: "augraydead",
-			ID:   "855108016898048020",
-		},
-		game.Tan: {
-			Name: "autandead",
-			ID:   "855108017007886356",
-		},
-		game.Sunset: {
-			Name: "ausunsetdead",
-			ID:   "855108017096097802",
 		},
 	},
 }

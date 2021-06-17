@@ -1,13 +1,11 @@
 package discord
 
 import (
-	"context"
-	"github.com/automuteus/utils/pkg/task"
-	"github.com/bsm/redislock"
+	"container/heap"
+	"fmt"
 	"github.com/bwmarrin/discordgo"
-	"github.com/denverquane/amongusdiscord/storage"
 	"log"
-	"strconv"
+	"sync"
 	"time"
 )
 
@@ -19,202 +17,217 @@ const (
 	DeadPriority  HandlePriority = 2
 )
 
-func (bot *Bot) applyToSingle(dgs *GameState, userID string, mute, deaf bool) {
-	log.Println("Forcibly applying mute/deaf to " + userID)
-	prem, _ := bot.PostgresInterface.GetGuildPremiumStatus(dgs.GuildID)
-	uid, _ := strconv.ParseUint(userID, 10, 64)
-	req := task.UserModifyRequest{
-		Premium: prem,
-		Users: []task.UserModify{
-			{
-				UserID: uid,
-				Mute:   mute,
-				Deaf:   deaf,
-			},
-		},
-	}
-	// nil lock because this is an override; we don't care about legitimately obtaining the lock
-	mdsc := bot.GalactusClient.ModifyUsers(dgs.GuildID, dgs.ConnectCode, req, nil)
-	if mdsc == nil {
-		log.Println("Nil response from modifyUsers, probably not good...")
-	} else {
-		go RecordDiscordRequestsByCounts(bot.RedisInterface.client, mdsc)
-	}
+type PrioritizedPatchParams struct {
+	priority    int
+	patchParams UserPatchParameters
 }
 
-func (bot *Bot) applyToAll(dgs *GameState, mute, deaf bool) {
-	g, err := bot.PrimarySession.State.Guild(dgs.GuildID)
+type PatchPriority []PrioritizedPatchParams
+
+func (h PatchPriority) Len() int { return len(h) }
+
+//NOTE this is inversed so HIGHER numbers are pulled FIRST
+func (h PatchPriority) Less(i, j int) bool { return h[i].priority > h[j].priority }
+func (h PatchPriority) Swap(i, j int)      { h[i], h[j] = h[j], h[i] }
+func (h *PatchPriority) Push(x interface{}) {
+	// Push and Pop use pointer receivers because they modify the slice's length,
+	// not just its contents.
+	*h = append(*h, x.(PrioritizedPatchParams))
+}
+
+func (h *PatchPriority) Pop() interface{} {
+	old := *h
+	n := len(old)
+	x := old[n-1]
+	*h = old[0 : n-1]
+	return x
+}
+
+func (guild *GuildState) verifyVoiceStateChanges(s *discordgo.Session) *discordgo.Guild {
+	g, err := s.State.Guild(guild.guildSettings.GuildID)
 	if err != nil {
-		log.Println(err)
-		return
+		guild.Logln(err.Error())
+		return nil
 	}
 
-	users := []task.UserModify{}
-
 	for _, voiceState := range g.VoiceStates {
-		userData, err := dgs.GetUser(voiceState.UserID)
+		userData, err := guild.UserData.GetUser(voiceState.UserID)
+
 		if err != nil {
-			// the User doesn't exist in our userdata cache; add them
+			//the user doesn't exist in our userdata cache; add them
 			added := false
-			userData, added = dgs.checkCacheAndAddUser(g, bot.PrimarySession, voiceState.UserID)
+			userData, added = guild.checkCacheAndAddUser(g, s, voiceState.UserID)
 			if !added {
 				continue
 			}
 		}
 
-		tracked := voiceState.ChannelID != "" && dgs.Tracking.ChannelID == voiceState.ChannelID
+		tracked := guild.Tracking.IsTracked(voiceState.ChannelID)
+		//only actually tracked if we're in a tracked channel AND linked to a player
+		tracked = tracked && userData.IsLinked()
+		mute, deaf := guild.guildSettings.GetVoiceState(userData.IsAlive(), tracked, guild.AmongUsData.GetPhase())
 
-		_, linked := dgs.AmongUsData.GetByName(userData.InGameName)
-		// only actually tracked if we're in a tracked channel AND linked to a player
-		tracked = tracked && linked
+		//still have to check if the player is linked
+		//(music bots are untracked so mute/deafen = false, but they dont have playerdata...)
+		if userData.IsLinked() && userData.IsPendingVoiceUpdate() && voiceState.Mute == mute && voiceState.Deaf == deaf {
+			userData.SetPendingVoiceUpdate(false)
 
-		if tracked {
-			uid, _ := strconv.ParseUint(userData.User.UserID, 10, 64)
-			users = append(users, task.UserModify{
-				UserID: uid,
-				Mute:   mute,
-				Deaf:   deaf,
-			})
-			log.Println("Forcibly applying mute/deaf to " + userData.User.UserID)
+			guild.UserData.UpdateUserData(voiceState.UserID, userData)
 		}
 	}
-	if len(users) > 0 {
-		prem, _ := bot.PostgresInterface.GetGuildPremiumStatus(dgs.GuildID)
-		req := task.UserModifyRequest{
-			Premium: prem,
-			Users:   users,
-		}
-		// nil lock because this is an override; we don't care about legitimately obtaining the lock
-		mdsc := bot.GalactusClient.ModifyUsers(dgs.GuildID, dgs.ConnectCode, req, nil)
-		if mdsc == nil {
-			log.Println("Nil response from modifyUsers, probably not good...")
-		} else {
-			go RecordDiscordRequestsByCounts(bot.RedisInterface.client, mdsc)
-		}
-	}
+	return g
 }
 
-// handleTrackedMembers moves/mutes players according to the current game state
-func (bot *Bot) handleTrackedMembers(sess *discordgo.Session, sett *storage.GuildSettings, delay int, handlePriority HandlePriority, gsr GameStateRequest) {
+//handleTrackedMembers moves/mutes players according to the current game state
+func (guild *GuildState) handleTrackedMembers(sm *SessionManager, delay int, handlePriority HandlePriority) {
 
-	lock, dgs := bot.RedisInterface.GetDiscordGameStateAndLock(gsr)
-	for lock == nil {
-		lock, dgs = bot.RedisInterface.GetDiscordGameStateAndLock(gsr)
-	}
+	g := guild.verifyVoiceStateChanges(sm.GetPrimarySession())
 
-	g, err := sess.State.Guild(dgs.GuildID)
-
-	if err != nil || g == nil {
-		lock.Release(ctx)
+	if g == nil {
 		return
 	}
 
-	users := []task.UserModify{}
+	priorityQueue := &PatchPriority{}
+	heap.Init(priorityQueue)
 
-	priorityRequests := 0
 	for _, voiceState := range g.VoiceStates {
-		userData, err := dgs.GetUser(voiceState.UserID)
+
+		userData, err := guild.UserData.GetUser(voiceState.UserID)
 		if err != nil {
-			// the User doesn't exist in our userdata cache; add them
+			//the user doesn't exist in our userdata cache; add them
 			added := false
-			userData, added = dgs.checkCacheAndAddUser(g, sess, voiceState.UserID)
+			userData, added = guild.checkCacheAndAddUser(g, sm.GetPrimarySession(), voiceState.UserID)
 			if !added {
 				continue
 			}
 		}
 
-		tracked := voiceState.ChannelID != "" && dgs.Tracking.ChannelID == voiceState.ChannelID
+		tracked := guild.Tracking.IsTracked(voiceState.ChannelID)
+		//only actually tracked if we're in a tracked channel AND linked to a player
+		tracked = tracked && userData.IsLinked()
+		shouldMute, shouldDeaf := guild.guildSettings.GetVoiceState(userData.IsAlive(), tracked, guild.AmongUsData.GetPhase())
 
-		auData, found := dgs.AmongUsData.GetByName(userData.InGameName)
-		// only actually tracked if we're in a tracked channel AND linked to a player
-		var isAlive bool
-
-		// only actually tracked if we're in a tracked channel AND linked to a player
-		if !sett.GetMuteSpectator() {
-			tracked = tracked && found
-			isAlive = auData.IsAlive
-		} else {
-			if !found {
-				// we just assume the spectator is dead
-				isAlive = false
-			} else {
-				isAlive = auData.IsAlive
-			}
+		nick := userData.GetPlayerName()
+		if !guild.guildSettings.GetApplyNicknames() {
+			nick = ""
 		}
-		shouldMute, shouldDeaf := sett.GetVoiceState(isAlive, tracked, dgs.AmongUsData.GetPhase())
 
-		incorrectMuteDeafenState := shouldMute != userData.ShouldBeMute || shouldDeaf != userData.ShouldBeDeaf
+		//only issue a change if the user isn't in the right state already
+		//nicksmatch can only be false if the in-game data is != nil, so the reference to .audata below is safe
+		//check the userdata is linked here to not accidentally undeafen music bots, for example
+		if userData.IsLinked() && shouldMute != voiceState.Mute || shouldDeaf != voiceState.Deaf || (nick != "" && userData.GetNickName() != userData.GetPlayerName()) {
 
-		// only issue a change if the User isn't in the right state already
-		// nicksmatch can only be false if the in-game data is != nil, so the reference to .audata below is safe
-		// check the userdata is linked here to not accidentally undeafen music bots, for example
-		if incorrectMuteDeafenState && (found || sett.GetMuteSpectator()) {
-			uid, _ := strconv.ParseUint(userData.User.UserID, 10, 64)
-			userModify := task.UserModify{
-				UserID: uid,
-				Mute:   shouldMute,
-				Deaf:   shouldDeaf,
+			//only issue the req to discord if we're not waiting on another one
+			if !userData.IsPendingVoiceUpdate() {
+				priority := 0
+
+				if handlePriority != NoPriority {
+					if handlePriority == AlivePriority && userData.IsAlive() {
+						priority++
+					} else if handlePriority == DeadPriority && !userData.IsAlive() {
+						priority++
+					}
+				}
+
+				params := UserPatchParameters{guild.guildSettings.GuildID, userData, shouldDeaf, shouldMute, nick}
+
+				heap.Push(priorityQueue, PrioritizedPatchParams{
+					priority:    priority,
+					patchParams: params,
+				})
 			}
 
-			if handlePriority != NoPriority && ((handlePriority == AlivePriority && isAlive) || (handlePriority == DeadPriority && !isAlive)) {
-				users = append([]task.UserModify{userModify}, users...)
-				priorityRequests++ // counter of how many elements on the front of the arr should be sent first
+		} else if userData.IsLinked() {
+			if shouldMute {
+				guild.Log(fmt.Sprintf("Not muting %s because they're already muted\n", userData.GetUserName()))
 			} else {
-				users = append(users, userModify)
+				guild.Log(fmt.Sprintf("Not unmuting %s because they're already unmuted\n", userData.GetUserName()))
 			}
-			userData.SetShouldBeMuteDeaf(shouldMute, shouldDeaf)
-			dgs.UpdateUserData(userData.User.UserID, userData)
 		}
 	}
-
-	// we relinquish the lock while we wait
-	bot.RedisInterface.SetDiscordGameState(dgs, lock)
-
-	voiceLock := bot.RedisInterface.LockVoiceChanges(dgs.ConnectCode, time.Second*time.Duration(delay+1))
+	wg := sync.WaitGroup{}
+	waitForHigherPriority := false
 
 	if delay > 0 {
 		log.Printf("Sleeping for %d seconds before applying changes to users\n", delay)
 		time.Sleep(time.Second * time.Duration(delay))
 	}
 
-	if dgs.Running && len(users) > 0 {
-		prem, _ := bot.PostgresInterface.GetGuildPremiumStatus(dgs.GuildID)
+	for priorityQueue.Len() > 0 {
+		p := heap.Pop(priorityQueue).(PrioritizedPatchParams)
 
-		if priorityRequests > 0 {
-			req := task.UserModifyRequest{
-				Premium: prem,
-				Users:   users[:priorityRequests],
-			}
-			// no lock; we're not done yet
-			bot.issueMutesAndRecord(dgs.GuildID, dgs.ConnectCode, req, nil)
-			log.Println("Finished issuing high priority mutes")
-			rem := users[priorityRequests:]
-			if len(rem) > 0 {
-				req = task.UserModifyRequest{
-					Premium: prem,
-					Users:   rem,
-				}
-				bot.issueMutesAndRecord(dgs.GuildID, dgs.ConnectCode, req, voiceLock)
-			} else if voiceLock != nil {
-				voiceLock.Release(context.Background())
-			}
-		} else {
-			// no priority; issue all at once
-			log.Println("Issuing mutes/deafens with no particular priority")
-			req := task.UserModifyRequest{
-				Premium: prem,
-				Users:   users,
-			}
-			bot.issueMutesAndRecord(dgs.GuildID, dgs.ConnectCode, req, voiceLock)
+		if p.priority > 0 {
+			waitForHigherPriority = true
+			guild.Log(fmt.Sprintf("User %s has higher priority: %d\n", p.patchParams.Userdata.GetID(), p.priority))
+		} else if waitForHigherPriority {
+			//wait for all the other users to get muted/unmuted completely, first
+			//log.Println("Waiting for high priority user changes first")
+			wg.Wait()
+			waitForHigherPriority = false
 		}
+
+		wg.Add(1)
+
+		//wait until it goes through
+		p.patchParams.Userdata.SetPendingVoiceUpdate(true)
+
+		guild.UserData.UpdateUserData(p.patchParams.Userdata.GetID(), p.patchParams.Userdata)
+
+		//we can issue mutes/deafens from ANY session, not just the primary
+		go muteWorker(sm.GetSessionForRequest(p.patchParams.GuildID), &wg, p.patchParams)
 	}
+	wg.Wait()
+
+	return
 }
 
-func (bot *Bot) issueMutesAndRecord(guildID, connectCode string, req task.UserModifyRequest, lock *redislock.Lock) {
-	mdsc := bot.GalactusClient.ModifyUsers(guildID, connectCode, req, lock)
-	if mdsc == nil {
-		log.Println("Nil response from modifyUsers, probably not good...")
-	} else {
-		go RecordDiscordRequestsByCounts(bot.RedisInterface.client, mdsc)
+func muteWorker(s *discordgo.Session, wg *sync.WaitGroup, parameters UserPatchParameters) {
+	guildMemberUpdate(s, parameters)
+	wg.Done()
+}
+
+//voiceStateChange handles more edge-case behavior for users moving between voice channels, and catches when
+//relevant discord api requests are fully applied successfully. Otherwise, we can issue multiple requests for
+//the same mute/unmute, erroneously
+func (guild *GuildState) voiceStateChange(s *discordgo.Session, m *discordgo.VoiceStateUpdate) {
+	g := guild.verifyVoiceStateChanges(s)
+
+	if g == nil {
+		return
+	}
+
+	updateMade := false
+
+	//fetch the userData from our userData data cache
+	userData, err := guild.UserData.GetUser(m.UserID)
+	if err != nil {
+		//the user doesn't exist in our userdata cache; add them
+		userData, _ = guild.checkCacheAndAddUser(g, s, m.UserID)
+	}
+	tracked := guild.Tracking.IsTracked(m.ChannelID)
+	//only actually tracked if we're in a tracked channel AND linked to a player
+	tracked = tracked && userData.IsLinked()
+	mute, deaf := guild.guildSettings.GetVoiceState(userData.IsAlive(), tracked, guild.AmongUsData.GetPhase())
+	//check the userdata is linked here to not accidentally undeafen music bots, for example
+	if userData.IsLinked() && !userData.IsPendingVoiceUpdate() && (mute != m.Mute || deaf != m.Deaf) {
+		userData.SetPendingVoiceUpdate(true)
+
+		guild.UserData.UpdateUserData(m.UserID, userData)
+
+		nick := userData.GetPlayerName()
+		if !guild.guildSettings.GetApplyNicknames() {
+			nick = ""
+		}
+
+		go guildMemberUpdate(s, UserPatchParameters{m.GuildID, userData, deaf, mute, nick})
+
+		//log.Println("Applied deaf/undeaf mute/unmute via voiceStateChange")
+
+		updateMade = true
+	}
+
+	if updateMade {
+		//log.Println("Updating state message")
+		guild.GameStateMsg.Edit(s, gameStateResponse(guild))
 	}
 }

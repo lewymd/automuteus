@@ -2,19 +2,15 @@ package main
 
 import (
 	"errors"
-	"fmt"
 	"io"
 	"log"
-	"math/rand"
 	"os"
 	"os/signal"
 	"path"
 	"strconv"
-	"strings"
 	"syscall"
 	"time"
 
-	"github.com/denverquane/amongusdiscord/locale"
 	"github.com/denverquane/amongusdiscord/storage"
 
 	"github.com/denverquane/amongusdiscord/discord"
@@ -22,20 +18,22 @@ import (
 )
 
 var (
-	version = "6.9.0"
+	version = "2.4.0"
 	commit  = "none"
 	date    = "unknown"
 )
 
 const DefaultURL = "http://localhost:8123"
+const DefaultServicePort = "5000"
+const DefaultSocketTimeoutSecs = 36000
 
 func main() {
-	// seed the rand generator (used for making connection codes)
-	rand.Seed(time.Now().Unix())
 	err := discordMainWrapper()
 	if err != nil {
 		log.Println("Program exited with the following error:")
 		log.Println(err)
+		log.Println("This window will automatically terminate in 10 seconds")
+		time.Sleep(10 * time.Second)
 		return
 	}
 }
@@ -51,7 +49,7 @@ func discordMainWrapper() error {
 				log.Println("Issue creating sample config.txt")
 				return err
 			}
-			_, err = f.WriteString(fmt.Sprintf("DISCORD_BOT_TOKEN=\nBOT_LANG=%s\n", locale.DefaultLang))
+			_, err = f.WriteString("DISCORD_BOT_TOKEN=\n")
 			f.Close()
 		}
 	}
@@ -80,19 +78,9 @@ func discordMainWrapper() error {
 		return errors.New("no DISCORD_BOT_TOKEN provided")
 	}
 
-	extraTokens := []string{}
-	extraTokenStr := strings.ReplaceAll(os.Getenv("WORKER_BOT_TOKENS"), " ", "")
-	if extraTokenStr != "" {
-		extraTokens = strings.Split(extraTokenStr, ",")
-	}
-
 	discordToken2 := os.Getenv("DISCORD_BOT_TOKEN_2")
 	if discordToken2 != "" {
-		log.Println("[INFO] DISCORD_BOT_TOKEN_2 is deprecated. Please use WORKER_BOT_TOKENS in the future!")
-		extraTokens = append(extraTokens, discordToken2)
-	}
-	if len(extraTokens) > 0 {
-		log.Printf("You provided %d worker tokens so I'll be sending them to Galactus\n", len(extraTokens))
+		log.Println("You provided a 2nd Discord Bot Token, so I'll try to use it")
 	}
 
 	numShardsStr := os.Getenv("NUM_SHARDS")
@@ -116,81 +104,83 @@ func discordMainWrapper() error {
 		url = DefaultURL
 	}
 
-	var redisClient discord.RedisInterface
-	var storageInterface storage.StorageInterface
-
-	redisAddr := os.Getenv("REDIS_ADDR")
-	redisPassword := os.Getenv("REDIS_PASS")
-	if redisAddr != "" {
-		err := redisClient.Init(storage.RedisParameters{
-			Addr:     redisAddr,
-			Username: "",
-			Password: redisPassword,
-		})
-		if err != nil {
-			log.Println(err)
-		}
-		err = storageInterface.Init(storage.RedisParameters{
-			Addr:     redisAddr,
-			Username: "",
-			Password: redisPassword,
-		})
-		if err != nil {
-			log.Println(err)
-		}
+	internalPort := os.Getenv("PORT")
+	if internalPort == "" {
+		log.Printf("[Info] No PORT provided. Defaulting to %s\n", discord.DefaultPort)
+		internalPort = discord.DefaultPort
 	} else {
-		return errors.New("no REDIS_ADDR specified; exiting")
+		num, err := strconv.Atoi(internalPort)
+		if err != nil || num > 65535 || (num < 1024 && num != 80 && num != 443) {
+			return errors.New("invalid PORT (outside range [1024-65535] or 80/443) provided")
+		}
 	}
 
-	galactusAddr := os.Getenv("GALACTUS_ADDR")
-	if galactusAddr == "" {
-		return errors.New("no GALACTUS_ADDR specified; exiting")
+	servicePort := os.Getenv("SERVICE_PORT")
+	if servicePort == "" {
+		log.Printf("[Info] No SERVICE_PORT provided. Defaulting to %s\n", DefaultServicePort)
+		servicePort = DefaultServicePort
+	} else {
+		num, err := strconv.Atoi(servicePort)
+		if err != nil || num > 65535 || (num < 1024 && num != 80 && num != 443) {
+			return errors.New("invalid SERVICE_PORT (outside range [1024-65535] or 80/443) provided")
+		}
 	}
 
-	galactusClient, err := discord.NewGalactusClient(galactusAddr)
-	if err != nil {
-		log.Println("Error connecting to Galactus!")
-		return err
+	captureTimeout := DefaultSocketTimeoutSecs
+	captureTimeoutStr := os.Getenv("CAPTURE_TIMEOUT")
+	if captureTimeoutStr != "" {
+		num, err := strconv.Atoi(captureTimeoutStr)
+		if err != nil || num < 0 {
+			return errors.New("invalid or non-numeric CAPTURE_TIMOUT provided")
+		}
+	}
+	log.Printf("Using capture timeout of %d seconds\n", captureTimeout)
+
+	var storageClient storage.StorageInterface
+	dbSuccess := false
+
+	authPath := os.Getenv("GOOGLE_APPLICATION_CREDENTIALS")
+	projectID := os.Getenv("FIRESTORE_PROJECT_ID")
+	if authPath != "" && projectID != "" {
+		log.Println("GOOGLE_APPLICATION_CREDENTIALS variable is set; attempting to use Firestore as the Storage Driver")
+		storageClient = &storage.FirestoreDriver{}
+		err = storageClient.Init(projectID)
+		if err != nil {
+			log.Printf("Failed to create Firestore client with error: %s", err)
+		} else {
+			dbSuccess = true
+			log.Println("Success in initializing Firestore client as the Storage Driver")
+		}
 	}
 
-	locale.InitLang(os.Getenv("LOCALE_PATH"), os.Getenv("BOT_LANG"))
-
-	psql := storage.PsqlInterface{}
-	pAddr := os.Getenv("POSTGRES_ADDR")
-	if pAddr == "" {
-		return errors.New("no POSTGRES_ADDR specified; exiting")
-	}
-
-	pUser := os.Getenv("POSTGRES_USER")
-	if pUser == "" {
-		return errors.New("no POSTGRES_USER specified; exiting")
-	}
-
-	pPass := os.Getenv("POSTGRES_PASS")
-	if pPass == "" {
-		return errors.New("no POSTGRES_PASS specified; exiting")
-	}
-
-	err = psql.Init(storage.ConstructPsqlConnectURL(pAddr, pUser, pPass))
-	if err != nil {
-		return err
-	}
-
-	if os.Getenv("AUTOMUTEUS_OFFICIAL") == "" {
-		go psql.LoadAndExecFromFile("./storage/postgres.sql")
+	if !dbSuccess {
+		storageClient = &storage.FilesystemDriver{}
+		configPath := os.Getenv("CONFIG_PATH")
+		if configPath == "" {
+			configPath = "./"
+		}
+		log.Printf("Using %s as the base path for config", configPath)
+		err := storageClient.Init(configPath)
+		if err != nil {
+			log.Fatalf("Failed to create Filesystem Storage Driver with error: %s", err)
+		}
+		log.Println("Success in initializing the local Filesystem as the Storage Driver")
 	}
 
 	log.Println("Bot is now running.  Press CTRL-C to exit.")
 	sc := make(chan os.Signal, 1)
 	signal.Notify(sc, syscall.SIGINT, syscall.SIGTERM, os.Interrupt, os.Kill)
 
-	bot := discord.MakeAndStartBot(version, commit, discordToken, url, emojiGuildID, extraTokens, numShards, shardID, &redisClient, &storageInterface, &psql, galactusClient, logPath)
+	bot := discord.MakeAndStartBot(version+"-"+commit, discordToken, discordToken2, url, internalPort, emojiGuildID, numShards, shardID, storageClient, logPath, captureTimeout)
+
+	go discord.MessagesServer(servicePort, bot)
 
 	<-sc
-	//bot.GracefulClose()
-	log.Printf("Received Sigterm or Kill signal. Bot will terminate in 1 second")
-	time.Sleep(time.Second)
+	bot.GracefulClose(5, "**Bot has been terminated, so I'm killing your game in 5 seconds!**")
+	log.Printf("Received Sigterm or Kill signal. Bot will terminate in 5 seconds")
+	time.Sleep(time.Second * time.Duration(5))
 
 	bot.Close()
+	storageClient.Close()
 	return nil
 }
