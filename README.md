@@ -1,6 +1,6 @@
-#15 player support
+# 15 player support
 
-This is a very rough fix for 15 player support for people still running 2.4.3 of AutoMuteUs and self hosting, everything should work the same, and has been fine in my limited testing but you do this at your own risk!
+This is a very rough fix for 15 player support for people still running 2.4.3 of AutoMuteUs and self hosting, everything should work the same, and has been fine in my limited testing but you do this at your own risk! It is recommened that you delete all Emoji currently on your servers where this bot is running so it can load all the new ones. 
 
 <p align="center">
     <img src="assets/AutoMuteUsBanner_cropped.png" width="800">
