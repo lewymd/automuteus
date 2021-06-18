@@ -187,7 +187,7 @@ var GlobalAlivenessEmojis = AlivenessEmojis{
 			ID:   "855108016546250753",
 		},
 		game.Sunset: {
-			Name: "ausunset",
+			Name: "aucoral",
 			ID:   "855108016466821151",
 		},
 	},
@@ -261,7 +261,7 @@ var GlobalAlivenessEmojis = AlivenessEmojis{
 			ID:   "855108017007886356",
 		},
 		game.Sunset: {
-			Name: "ausunsetdead",
+			Name: "aucoraldead",
 			ID:   "855108017096097802",
 		},
 	},
