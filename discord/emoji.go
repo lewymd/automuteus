@@ -108,7 +108,7 @@ func (guild *GuildState) addAllMissingEmojis(s *discordgo.Session, guildID strin
 var GlobalSpecialEmojis = map[string]Emoji{
 	"alarm": {
 		Name: "aualarm",
-		ID:   "756595863048159323",
+		ID:   "855481569787510814",
 	},
 }
 
@@ -120,149 +120,149 @@ var GlobalAlivenessEmojis = AlivenessEmojis{
 	true: []Emoji{
 		game.Red: {
 			Name: "aured",
-			ID:   "762392085768175646",
+			ID:   "855481574882410566",
 		},
 		game.Blue: {
 			Name: "aublue",
-			ID:   "762392085629632512",
+			ID:   "855481573441142825",
 		},
 		game.Green: {
 			Name: "augreen",
-			ID:   "762392085889417226",
+			ID:   "855481573914312744",
 		},
 		game.Pink: {
 			Name: "aupink",
-			ID:   "762392085726363648",
+			ID:   "855481574866157588",
 		},
 		game.Orange: {
 			Name: "auorange",
-			ID:   "762392085264728095",
+			ID:   "855481574937460736",
 		},
 		game.Yellow: {
 			Name: "auyellow",
-			ID:   "762392085541158923",
+			ID:   "855481574909018153",
 		},
 		game.Black: {
 			Name: "aublack",
-			ID:   "762392086493790249",
+			ID:   "855481572396367922",
 		},
 		game.White: {
 			Name: "auwhite",
-			ID:   "762392085990866974",
+			ID:   "855481575020822568",
 		},
 		game.Purple: {
 			Name: "aupurple",
-			ID:   "762392085973303376",
+			ID:   "855481574753042452",
 		},
 		game.Brown: {
 			Name: "aubrown",
-			ID:   "762392086023634986",
+			ID:   "855481573607211008",
 		},
 		game.Cyan: {
 			Name: "aucyan",
-			ID:   "762392087945281557",
+			ID:   "855481574139887666",
 		},
 		game.Lime: {
 			Name: "aulime",
-			ID:   "762392088121442334",
+			ID:   "855481574686195712",
 		},
 		game.Maroon: {
 			Name: "aumaroon",
-			ID:   "855108016881008670",
+			ID:   "855481574270566420",
 		},
 		game.Rose: {
 			Name: "aurose",
-			ID:   "855108016734732329",
+			ID:   "855481574480412733",
 		},
 		game.Banana: {
 			Name: "aubanana",
-			ID:   "855108016420552736",
+			ID:   "855481569544634369",
 		},
 		game.Gray: {
 			Name: "augray",
-			ID:   "855108016801054760",
+			ID:   "855481573507989514",
 		},
 		game.Tan: {
 			Name: "autan",
-			ID:   "855108016546250753",
+			ID:   "855481574521700352",
 		},
 		game.Coral: {
 			Name: "aucoral",
-			ID:   "855108016466821151",
+			ID:   "855481573638012928",
 		},
 	},
 	false: []Emoji{
 		game.Red: {
 			Name: "aureddead",
-			ID:   "762397192362393640",
+			ID:   "855481577168961537",
 		},
 		game.Blue: {
 			Name: "aubluedead",
-			ID:   "762397192349679616",
+			ID:   "855481576976416818",
 		},
 		game.Green: {
 			Name: "augreendead",
-			ID:   "762397192060272724",
+			ID:   "855481576899870721",
 		},
 		game.Pink: {
 			Name: "aupinkdead",
-			ID:   "762397192643805194",
+			ID:   "855481577122299973",
 		},
 		game.Orange: {
 			Name: "auorangedead",
-			ID:   "762397192333819904",
+			ID:   "855481577131999243",
 		},
 		game.Yellow: {
 			Name: "auyellowdead",
-			ID:   "762397192425046016",
+			ID:   "855481576938799115",
 		},
 		game.Black: {
 			Name: "aublackdead",
-			ID:   "762397192291090462",
+			ID:   "855481576547418152",
 		},
 		game.White: {
 			Name: "auwhitedead",
-			ID:   "762397192409186344",
+			ID:   "855481577201991730",
 		},
 		game.Purple: {
 			Name: "aupurpledead",
-			ID:   "762397192404860958",
+			ID:   "855481577168568321",
 		},
 		game.Brown: {
 			Name: "aubrowndead",
-			ID:   "762397192102739989",
+			ID:   "855481576607318066",
 		},
 		game.Cyan: {
 			Name: "aucyandead",
-			ID:   "762397192307867698",
+			ID:   "855481576816771132",
 		},
 		game.Lime: {
 			Name: "aulimedead",
-			ID:   "762397192366325793",
+			ID:   "855481577114959912",
 		},
 		game.Maroon: {
 			Name: "aumaroondead",
-			ID:   "855108016890576906",
+			ID:   "855481576640348171",
 		},
 		game.Rose: {
 			Name: "aurosedead",
-			ID:   "855108016817700936",
+			ID:   "855481577059385345",
 		},
 		game.Banana: {
 			Name: "aubananadead",
-			ID:   "855108016746266644",
+			ID:   "855481570310750208",
 		},
 		game.Gray: {
 			Name: "augraydead",
-			ID:   "855108016898048020",
+			ID:   "855481576841412618",
 		},
 		game.Tan: {
 			Name: "autandead",
-			ID:   "855108017007886356",
+			ID:   "855481577340665896",
 		},
 		game.Coral: {
 			Name: "aucoraldead",
-			ID:   "855108017096097802",
+			ID:   "855481576825552907",
 		},
 	},
 }
